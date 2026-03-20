@@ -44,6 +44,10 @@ type actionDoneMsg struct {
 
 type tickMsg time.Time
 
+type searchResultsMsg struct {
+	results []system.AppState
+}
+
 type pendingAction struct {
 	action system.Action
 }
@@ -81,6 +85,10 @@ type model struct {
 	apps          []system.AppInfo
 	appCursor     int
 	selectedApps  map[string]bool
+	searchMode    bool
+	searchInput   string
+	searchResults []system.AppState
+	showSearch    bool
 	snapshot      system.Snapshot
 	status        string
 	confirming    *pendingAction
@@ -130,7 +138,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
-		if m.confirming != nil || m.networkEdit.Active {
+		if m.confirming != nil || m.networkEdit.Active || m.searchMode {
 			return m, tickCmd()
 		}
 		m.loading = true
@@ -145,6 +153,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.loading = true
 		return m, m.refreshCmd()
+
+	case searchResultsMsg:
+		m.searchResults = msg.results
+		m.showSearch = true
+		m.appCursor = 0
+		if len(msg.results) == 0 {
+			m.status = "未找到匹配的软件包"
+		} else {
+			m.status = fmt.Sprintf("找到 %d 个结果", len(msg.results))
+		}
+		return m, nil
 
 	case tea.KeyMsg:
 		if m.confirming != nil {
@@ -362,6 +381,12 @@ func (m model) updateDisk(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) updatePackages(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.searchMode {
+		return m.updateSearchInput(msg)
+	}
+
+	visibleApps := m.visibleApps()
+
 	switch msg.String() {
 	case "up", "k":
 		if m.appCursor > 0 {
@@ -369,17 +394,31 @@ func (m model) updatePackages(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "down", "j":
-		if m.appCursor < len(m.apps)-1 {
+		if m.appCursor < len(visibleApps)-1 {
 			m.appCursor++
 		}
 		return m, nil
 	case " ":
-		if len(m.apps) == 0 {
+		if len(visibleApps) == 0 {
 			return m, nil
 		}
-		pkg := m.apps[m.appCursor].Package
+		pkg := visibleApps[m.appCursor].Package
 		m.selectedApps[pkg] = !m.selectedApps[pkg]
 		m.status = "已更新软件勾选状态"
+		return m, nil
+	case "/":
+		m.searchMode = true
+		m.searchInput = ""
+		m.status = "输入关键词搜索软件包，Enter 执行，Esc 取消"
+		return m, nil
+	case "esc":
+		if m.showSearch {
+			m.showSearch = false
+			m.searchResults = nil
+			m.appCursor = 0
+			m.status = "已返回默认列表"
+			return m, nil
+		}
 		return m, nil
 	case "o":
 		m.confirming = &pendingAction{action: system.OfficialSourceAction()}
@@ -404,6 +443,45 @@ func (m model) updatePackages(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.confirming = &pendingAction{action: system.InstallAppsAction(packages)}
 		return m, nil
+	case "d":
+		packages := m.selectedInstalledPackageNames()
+		if len(packages) == 0 {
+			m.status = "请先勾选已安装的软件再卸载"
+			return m, nil
+		}
+		m.confirming = &pendingAction{action: system.UninstallAppsAction(packages)}
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m model) updateSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.searchMode = false
+		m.searchInput = ""
+		m.status = "已取消搜索"
+		return m, nil
+	case "enter":
+		keyword := strings.TrimSpace(m.searchInput)
+		m.searchMode = false
+		if keyword == "" {
+			m.status = "搜索关键词为空"
+			return m, nil
+		}
+		m.status = "正在搜索: " + keyword
+		return m, searchCmd(keyword)
+	case "backspace":
+		runes := []rune(m.searchInput)
+		if len(runes) > 0 {
+			m.searchInput = string(runes[:len(runes)-1])
+		}
+		return m, nil
+	}
+
+	value := msg.String()
+	if utf8.RuneCountInString(value) == 1 && value != "\x00" {
+		m.searchInput += value
 	}
 	return m, nil
 }
@@ -435,12 +513,35 @@ func (m model) refreshCmd() tea.Cmd {
 
 func (m model) selectedPackageNames() []string {
 	result := make([]string, 0, len(m.selectedApps))
-	for _, app := range m.apps {
+	for _, app := range m.visibleApps() {
 		if m.selectedApps[app.Package] {
 			result = append(result, app.Package)
 		}
 	}
 	return result
+}
+
+func (m model) selectedInstalledPackageNames() []string {
+	result := make([]string, 0, len(m.selectedApps))
+	for _, app := range m.visibleApps() {
+		if m.selectedApps[app.Package] && app.Installed {
+			result = append(result, app.Package)
+		}
+	}
+	return result
+}
+
+func (m model) visibleApps() []system.AppState {
+	if m.showSearch {
+		return m.searchResults
+	}
+	return m.snapshot.Packages.Apps
+}
+
+func searchCmd(keyword string) tea.Cmd {
+	return func() tea.Msg {
+		return searchResultsMsg{results: system.SearchPackages(keyword)}
+	}
 }
 
 func tickCmd() tea.Cmd {

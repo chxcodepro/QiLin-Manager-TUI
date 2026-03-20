@@ -11,6 +11,7 @@ type Action struct {
 	Title   string
 	Confirm string
 	Command string
+	Preview string
 }
 
 type NetworkConfig struct {
@@ -42,6 +43,7 @@ apt-get update`, strings.Join(lines, "\n"))
 		Title:   "切换到银河麒麟 V10 官方源",
 		Confirm: "会备份当前 sources.list，并切换到内置官方源模板，继续吗？",
 		Command: buildRootCommand(script),
+		Preview: "cp sources.list{,.bak} && 写入官方源 && apt-get update",
 	}
 }
 
@@ -55,6 +57,7 @@ apt-get update`
 		Title:   "恢复备份源",
 		Confirm: "会用 /etc/apt/sources.list.bak 覆盖当前源并执行更新，继续吗？",
 		Command: buildRootCommand(script),
+		Preview: "cp sources.list.bak sources.list && apt-get update",
 	}
 }
 
@@ -63,6 +66,7 @@ func AptUpdateAction() Action {
 		Title:   "更新软件索引",
 		Confirm: "会执行 apt-get update，继续吗？",
 		Command: buildRootCommand("apt-get update"),
+		Preview: "apt-get update",
 	}
 }
 
@@ -71,6 +75,7 @@ func CleanAptCacheAction() Action {
 		Title:   "清理包缓存",
 		Confirm: "会执行 apt-get clean，继续吗？",
 		Command: buildRootCommand("apt-get clean"),
+		Preview: "apt-get clean",
 	}
 }
 
@@ -84,6 +89,7 @@ find %s -type f -name '*.log' -exec truncate -s 0 {} + 2>/dev/null || true`, hom
 		Title:   "清理日志文件",
 		Confirm: "会把 /var/log 和当前用户目录下的 .log 文件清空内容，继续吗？",
 		Command: buildRootCommand(script),
+		Preview: "find /var/log -name '*.log' -exec truncate -s 0 {} +",
 	}
 }
 
@@ -101,6 +107,25 @@ func InstallAppsAction(packages []string) Action {
 		Title:   "安装选中的软件",
 		Confirm: "会通过 apt-get install 安装当前勾选的软件，继续吗？",
 		Command: buildRootCommand("apt-get install -y " + strings.Join(quoted, " ")),
+		Preview: "apt-get install -y " + strings.Join(quoted, " "),
+	}
+}
+
+func UninstallAppsAction(packages []string) Action {
+	quoted := make([]string, 0, len(packages))
+	for _, pkg := range packages {
+		pkg = strings.TrimSpace(pkg)
+		if pkg == "" {
+			continue
+		}
+		quoted = append(quoted, shellQuote(pkg))
+	}
+
+	return Action{
+		Title:   "卸载选中的软件",
+		Confirm: "会通过 apt-get remove 卸载当前勾选的已安装软件，继续吗？",
+		Command: buildRootCommand("apt-get remove -y " + strings.Join(quoted, " ")),
+		Preview: "apt-get remove -y " + strings.Join(quoted, " "),
 	}
 }
 

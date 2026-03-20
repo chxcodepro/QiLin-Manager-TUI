@@ -426,6 +426,49 @@ func collectPerf(ctx context.Context) PerfSection {
 	}
 }
 
+func SearchPackages(keyword string) []AppState {
+	keyword = strings.TrimSpace(keyword)
+	if keyword == "" {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	output := runShell(ctx, fmt.Sprintf("apt-cache search %s 2>/dev/null", shellQuote(keyword)))
+	lines := cleanLines(output)
+	if len(lines) == 0 {
+		return nil
+	}
+
+	results := make([]AppState, 0, len(lines))
+	for _, line := range lines {
+		parts := strings.SplitN(line, " - ", 2)
+		if len(parts) < 2 {
+			continue
+		}
+		pkg := strings.TrimSpace(parts[0])
+		desc := strings.TrimSpace(parts[1])
+		if pkg == "" {
+			continue
+		}
+		results = append(results, AppState{
+			AppInfo: AppInfo{
+				Name:        pkg,
+				Package:     pkg,
+				Description: desc,
+				InstallMode: "apt",
+			},
+			Installed: packageInstalled(ctx, pkg),
+		})
+	}
+
+	if len(results) > 50 {
+		results = results[:50]
+	}
+	return results
+}
+
 func collectPackages(ctx context.Context, apps []AppInfo) PackageSection {
 	sourceLines := readFileLines("/etc/apt/sources.list", 8, true)
 	if len(sourceLines) == 0 {

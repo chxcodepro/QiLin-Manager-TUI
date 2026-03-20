@@ -170,15 +170,23 @@ func (m model) viewPackages(width int) string {
 	actionCard := cardStyle.Width(width-width/2-2).Render(
 		highlightStyle.Render("维护动作") + "\n" +
 			highlightStyle.Render("[o]") + " 切换官方源\n" +
+			labelStyle.Render("    cp sources.list{,.bak} && 写入官方源 && apt-get update") + "\n" +
 			highlightStyle.Render("[b]") + " 恢复备份源\n" +
+			labelStyle.Render("    cp sources.list.bak sources.list && apt-get update") + "\n" +
 			highlightStyle.Render("[u]") + " 更新索引\n" +
+			labelStyle.Render("    apt-get update") + "\n" +
 			highlightStyle.Render("[c]") + " 清理包缓存\n" +
+			labelStyle.Render("    apt-get clean") + "\n" +
 			highlightStyle.Render("[g]") + " 清理 .log 文件\n" +
-			highlightStyle.Render("[i]") + " 安装勾选的软件",
+			labelStyle.Render("    find /var/log -name '*.log' -exec truncate -s 0 {} +") + "\n" +
+			highlightStyle.Render("[i]") + " 安装勾选的软件\n" +
+			highlightStyle.Render("[d]") + " 卸载勾选的软件",
 	)
 
+	visibleApps := m.visibleApps()
+
 	nameW, pkgW := 0, 0
-	for _, app := range m.snapshot.Packages.Apps {
+	for _, app := range visibleApps {
 		if w := displayWidth(app.Name); w > nameW {
 			nameW = w
 		}
@@ -189,9 +197,16 @@ func (m model) viewPackages(width int) string {
 	nameW += 2
 	pkgW += 1
 
-	appLines := make([]string, 0, len(m.snapshot.Packages.Apps)+1)
+	appLines := make([]string, 0, len(visibleApps)+2)
+
+	if m.searchMode {
+		appLines = append(appLines, highlightStyle.Render("搜索: ")+m.searchInput+"_")
+	} else if m.showSearch {
+		appLines = append(appLines, highlightStyle.Render("搜索结果")+" (Esc 返回默认列表)")
+	}
+
 	appLines = append(appLines, "    "+padRight("名称", nameW)+" "+padRight("包名", pkgW)+" "+padRight("状态", 6)+" 说明")
-	for idx, app := range m.snapshot.Packages.Apps {
+	for idx, app := range visibleApps {
 		selected := " "
 		if m.selectedApps[app.Package] {
 			selected = "x"
@@ -232,7 +247,7 @@ func (m model) viewFooter() string {
 		case sectionDisk:
 			lines = append(lines, "磁盘页: ↑/↓ 选项 | Enter 进入目录 | Backspace 返回")
 		case sectionPackage:
-			lines = append(lines, "软件页: ↑/↓ 选中 | 空格勾选")
+			lines = append(lines, "软件页: ↑/↓ 选中 | 空格勾选 | / 搜索 | d 卸载勾选 | Esc 返回列表")
 		}
 	}
 	return panelStyle.Width(width).Render(strings.Join(lines, "\n"))
