@@ -69,9 +69,8 @@ type DiskSection struct {
 }
 
 type PerfSection struct {
-	Summary   []InfoItem
-	TopCPU    []ProcessItem
-	TopMemory []ProcessItem
+	Summary []InfoItem
+	Top     []ProcessItem
 }
 
 type PackageSection struct {
@@ -316,14 +315,9 @@ func collectPerf(ctx context.Context) PerfSection {
 		swapUsage = "未知"
 	}
 
-	topCPU := parseProcessLines(cleanLines(runShell(ctx, "ps -eo pid,comm,%cpu,%mem --sort=-%cpu | head -n 8")))
-	if len(topCPU) == 0 {
-		topCPU = []ProcessItem{{PID: "-", Name: "未获取到进程数据", CPU: "-", Memory: "-"}}
-	}
-
-	topMemory := parseProcessLines(cleanLines(runShell(ctx, "ps -eo pid,comm,%cpu,%mem --sort=-%mem | head -n 8")))
-	if len(topMemory) == 0 {
-		topMemory = []ProcessItem{{PID: "-", Name: "未获取到进程数据", CPU: "-", Memory: "-"}}
+	top := parseProcessLines(cleanLines(runShell(ctx, "ps -eo pid,comm,%cpu,%mem --sort=-%cpu | head -n 12")))
+	if len(top) == 0 {
+		top = []ProcessItem{{PID: "-", Name: "未获取到进程数据", CPU: "-", Memory: "-"}}
 	}
 
 	return PerfSection{
@@ -333,8 +327,7 @@ func collectPerf(ctx context.Context) PerfSection {
 			{Label: "内存 已用/总量/可用", Value: memUsage},
 			{Label: "交换分区 已用/总量/使用率", Value: swapUsage},
 		},
-		TopCPU:    topCPU,
-		TopMemory: topMemory,
+		Top: top,
 	}
 }
 

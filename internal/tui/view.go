@@ -48,6 +48,16 @@ var (
 	selectedRowStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#0F172A")).
 				Background(lipgloss.Color("#FCD34D"))
+
+	selectedCellStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#0F172A")).
+				Background(lipgloss.Color("#F59E0B")).
+				Bold(true)
+
+	editingCellStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#F8FAFC")).
+				Background(lipgloss.Color("#2563EB")).
+				Bold(true)
 )
 
 func (m model) viewHeader() string {
@@ -101,47 +111,56 @@ func (m model) viewBody() string {
 }
 
 func (m model) viewOverview(width int) string {
-	systemCard := renderInfoCard("系统概览", m.snapshot.System.Items, width/3-2)
-	networkList := cardStyle.Width(width/3 - 2).Render(
-		highlightStyle.Render("网卡列表") + "\n" +
-			renderNetworkList(m.snapshot.Network.Interfaces, m.networkCursor),
+	top := lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		renderInfoCard("系统概览", m.snapshot.System.Items, width/3-2),
+		"  ",
+		cardStyle.Width(width-width/3-2).Render(
+			highlightStyle.Render("网络总览")+"\n"+
+				fmt.Sprintf("默认网关: %s\n", m.snapshot.Network.DefaultGateway)+
+				fmt.Sprintf("全局 DNS: %s\n", firstText(strings.Join(m.snapshot.Network.DNS, ", "), "-"))+
+				fmt.Sprintf("保存方式: %s", m.networkSaveModeText()),
+		),
 	)
-	networkDetail := cardStyle.Width(width-width/3-width/3-4).Render(
-		highlightStyle.Render("网络详情") + "\n" +
-			renderNetworkDetail(m.snapshot.Network, m.currentInterface()),
+
+	table := cardStyle.Width(width).Render(
+		highlightStyle.Render("网卡配置表") + "\n" +
+			"光标可直接选中单元格；Enter 开始编辑；Ctrl+S 保存当前行\n" +
+			renderNetworkTable(m),
 	)
-	return lipgloss.JoinHorizontal(lipgloss.Top, systemCard, "  ", networkList, "  ", networkDetail)
+
+	return lipgloss.JoinVertical(lipgloss.Left, top, table)
 }
 
 func (m model) viewDisk(width int) string {
-	info := []system.InfoItem{
-		{Label: "当前路径", Value: m.snapshot.Disk.Target},
-		{Label: "上一级", Value: firstText(m.snapshot.Disk.Parent, "无")},
-		{Label: "操作", Value: "Enter 进入 / Backspace 返回"},
-	}
-	left := renderInfoCard("分析目标", info, width/3)
-	center := cardStyle.Width(width/3).Render(
-		highlightStyle.Render("挂载情况") + "\n" +
+	top := cardStyle.Width(width).Render(
+		highlightStyle.Render("当前路径") + "\n" +
+			fmt.Sprintf("%s\n", m.snapshot.Disk.Target) +
+			fmt.Sprintf("上一级: %s\n", firstText(m.snapshot.Disk.Parent, "无")) +
+			"按键: Enter 进入 | Backspace 返回",
+	)
+	bottomLeft := cardStyle.Width(width/3 - 2).Render(
+		highlightStyle.Render("挂载") + "\n" +
 			renderList(m.snapshot.Disk.Filesystems, "暂无数据"),
 	)
-	right := cardStyle.Width(width-width/3-width/3-4).Render(
-		highlightStyle.Render("当前目录子项占用") + "\n" +
-			renderDiskEntries(m.snapshot.Disk.Entries, m.diskCursor),
+	bottomRight := cardStyle.Width(width-width/3-2).Render(
+		highlightStyle.Render("子项占用") + "\n" +
+			renderDiskEntries(m.snapshot.Disk.Entries, m.diskCursor, width-width/3-18),
 	)
-	return lipgloss.JoinHorizontal(lipgloss.Top, left, "  ", center, "  ", right)
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		top,
+		lipgloss.JoinHorizontal(lipgloss.Top, bottomLeft, "  ", bottomRight),
+	)
 }
 
 func (m model) viewPerf(width int) string {
-	summary := renderInfoCard("资源总览", m.snapshot.Perf.Summary, width/3)
-	topCPU := cardStyle.Width(width/3).Render(
-		highlightStyle.Render("CPU Top 进程") + "\n" +
-			renderProcessTable(m.snapshot.Perf.TopCPU),
+	summary := renderInfoCard("资源总览", m.snapshot.Perf.Summary, width/3-2)
+	table := cardStyle.Width(width-width/3-2).Render(
+		highlightStyle.Render("进程资源表") + "\n" +
+			renderProcessTable(m.snapshot.Perf.Top),
 	)
-	topMem := cardStyle.Width(width-width/3-width/3-4).Render(
-		highlightStyle.Render("内存 Top 进程") + "\n" +
-			renderProcessTable(m.snapshot.Perf.TopMemory),
-	)
-	return lipgloss.JoinHorizontal(lipgloss.Top, summary, "  ", topCPU, "  ", topMem)
+	return lipgloss.JoinHorizontal(lipgloss.Top, summary, "  ", table)
 }
 
 func (m model) viewPackages(width int) string {
@@ -194,10 +213,10 @@ func (m model) viewFooter() string {
 	width := max(m.width-4, 60)
 	lines := []string{"状态: " + m.status}
 	if m.showHelp {
-		lines = append(lines, "全局: ←/→ 切页 | r 刷新 | ? 帮助 | q 退出")
+		lines = append(lines, "全局: Tab/Shift+Tab 切页 | r 刷新 | ? 帮助开关 | q 退出")
 		switch m.active {
 		case sectionOverview:
-			lines = append(lines, "系统/网络页: ↑/↓ 选网卡 | e 编辑并保存")
+			lines = append(lines, "系统/网络页: ↑/↓ 选行 | ←/→ 选列 | Enter 编辑 | Ctrl+S 保存当前行 | Esc 取消编辑")
 		case sectionDisk:
 			lines = append(lines, "磁盘页: ↑/↓ 选项 | Enter 进入目录 | Backspace 返回")
 		case sectionPackage:
@@ -225,29 +244,6 @@ func (m model) viewConfirmDialog() string {
 		Render(content)
 }
 
-func (m model) viewNetworkForm() string {
-	if m.form == nil {
-		return ""
-	}
-	lines := []string{
-		highlightStyle.Render("编辑网卡配置"),
-		labelStyle.Render("网卡: "+m.form.iface.Name+" | 连接: "+m.form.iface.Connection),
-		"",
-	}
-	for idx, field := range m.form.fields {
-		line := fmt.Sprintf("%-10s %s", field.Label, field.Value)
-		if idx == m.form.cursor {
-			line = selectedRowStyle.Render(line)
-		}
-		lines = append(lines, line)
-	}
-	lines = append(lines, "", "↑/↓ 或 Tab 切换字段，左右切换模式，Ctrl+S 保存，Esc 取消")
-	return cardStyle.
-		Width(min(max(m.width/2, 48), 86)).
-		BorderForeground(lipgloss.Color("#F59E0B")).
-		Render(strings.Join(lines, "\n"))
-}
-
 func renderInfoCard(title string, items []system.InfoItem, width int) string {
 	lines := make([]string, 0, len(items)+1)
 	lines = append(lines, highlightStyle.Render(title))
@@ -259,10 +255,10 @@ func renderInfoCard(title string, items []system.InfoItem, width int) string {
 
 func renderProcessTable(items []system.ProcessItem) string {
 	lines := []string{
-		fmt.Sprintf("%-8s %-18s %-8s %-8s", "PID", "进程", "CPU%", "内存%"),
+		fmt.Sprintf("%-8s %-22s %-8s %-8s", "PID", "进程", "CPU%", "内存%"),
 	}
 	for _, item := range items {
-		lines = append(lines, fmt.Sprintf("%-8s %-18s %-8s %-8s", item.PID, item.Name, item.CPU, item.Memory))
+		lines = append(lines, fmt.Sprintf("%-8s %-22s %-8s %-8s", item.PID, truncateText(item.Name, 22), item.CPU, item.Memory))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -279,66 +275,99 @@ func renderPackageState(state system.PackageSection) string {
 	return strings.Join(lines, "\n")
 }
 
-func renderNetworkList(items []system.NetworkInterface, cursor int) string {
-	if len(items) == 0 {
-		return "暂无网卡"
-	}
-	lines := make([]string, 0, len(items))
-	for idx, item := range items {
-		line := fmt.Sprintf("%-10s %-10s %-15s %-15s", item.Name, item.State, firstText(item.IPv4, "-"), firstText(item.Mask, "-"))
-		if idx == cursor {
-			line = selectedRowStyle.Render(line)
-		}
-		lines = append(lines, line)
-	}
-	return strings.Join(lines, "\n")
-}
+func renderNetworkTable(m model) string {
+	headers := []string{"网卡", "状态", "模式", "IP", "掩码", "网关", "DNS", "连接"}
+	widths := []int{8, 8, 6, 15, 15, 15, 18, 12}
 
-func renderNetworkDetail(network system.NetworkSection, iface *system.NetworkInterface) string {
-	lines := []string{
-		fmt.Sprintf("默认网关: %s", network.DefaultGateway),
-		fmt.Sprintf("全局 DNS: %s", strings.Join(network.DNS, ", ")),
-	}
-	if network.NMCLIAvailable {
-		lines = append(lines, "可编辑方式: nmcli 持久化保存")
-	} else {
-		lines = append(lines, "可编辑方式: 当前系统缺少 nmcli，只能查看")
-	}
-	lines = append(lines, "")
-	if iface == nil {
-		lines = append(lines, "请先选中一块网卡")
+	lines := []string{renderTableRow(headers, widths, -1, -1, true)}
+	if len(m.networkDrafts) == 0 {
+		lines = append(lines, "暂无网卡")
 		return strings.Join(lines, "\n")
 	}
-	lines = append(lines,
-		fmt.Sprintf("网卡: %s", iface.Name),
-		fmt.Sprintf("连接名: %s", firstText(iface.Connection, "无")),
-		fmt.Sprintf("状态: %s", firstText(iface.State, "-")),
-		fmt.Sprintf("IPv4: %s", firstText(iface.IPv4, "-")),
-		fmt.Sprintf("子网掩码: %s", firstText(iface.Mask, "-")),
-		fmt.Sprintf("默认网关: %s", firstText(iface.Gateway, "-")),
-		fmt.Sprintf("DNS: %s", firstText(strings.Join(iface.DNS, ", "), "-")),
-		fmt.Sprintf("模式: %s", firstText(iface.Method, "未知")),
-	)
+
+	for rowIdx, draft := range m.networkDrafts {
+		values := []string{
+			draft.Device,
+			draft.State,
+			draft.Mode,
+			draft.Address,
+			draft.Mask,
+			draft.Gateway,
+			draft.DNS,
+			draft.Connection,
+		}
+		lines = append(lines, renderTableRow(values, widths, rowIdx, m.networkCursor, false))
+
+		cells := make([]string, 0, len(values))
+		for colIdx, value := range values {
+			cellValue := value
+			if rowIdx == m.networkCursor && colIdx == m.networkCol {
+				if m.networkEdit.Active {
+					cellValue = m.networkEdit.Value + "_"
+				}
+				cellValue = truncateText(firstText(cellValue, "-"), widths[colIdx])
+				if m.networkEdit.Active {
+					cells = append(cells, editingCellStyle.Width(widths[colIdx]).Render(cellValue))
+				} else {
+					cells = append(cells, selectedCellStyle.Width(widths[colIdx]).Render(cellValue))
+				}
+				continue
+			}
+			cells = append(cells, lipgloss.NewStyle().Width(widths[colIdx]).Render(truncateText(firstText(cellValue, "-"), widths[colIdx])))
+		}
+		lines[len(lines)-1] = strings.Join(cells, " ")
+	}
+
 	return strings.Join(lines, "\n")
 }
 
-func renderDiskEntries(entries []system.DiskEntry, cursor int) string {
+func renderTableRow(values []string, widths []int, rowIdx int, cursorRow int, header bool) string {
+	cells := make([]string, 0, len(values))
+	for idx, value := range values {
+		text := truncateText(firstText(value, "-"), widths[idx])
+		style := lipgloss.NewStyle().Width(widths[idx])
+		if header {
+			style = style.Bold(true)
+		}
+		if rowIdx == cursorRow {
+			style = selectedRowStyle.Width(widths[idx])
+		}
+		cells = append(cells, style.Render(text))
+	}
+	return strings.Join(cells, " ")
+}
+
+func renderDiskEntries(entries []system.DiskEntry, cursor int, nameWidth int) string {
 	if len(entries) == 0 {
 		return "当前目录没有子项，或需要更高权限"
 	}
-	lines := make([]string, 0, len(entries))
+	lines := []string{fmt.Sprintf("%-8s %-4s %s", "大小", "类型", "名称")}
 	for idx, entry := range entries {
-		kind := "文件"
+		kind := "文"
 		if entry.IsDir {
 			kind = "目录"
 		}
-		line := fmt.Sprintf("%-8s %-8s %s", entry.Size, kind, entry.Name)
+		line := fmt.Sprintf("%-8s %-4s %s", entry.Size, kind, truncateText(entry.Name, nameWidth))
 		if idx == cursor {
 			line = selectedRowStyle.Render(line)
 		}
 		lines = append(lines, line)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func truncateText(value string, width int) string {
+	runes := []rune(strings.TrimSpace(value))
+	if width <= 0 {
+		return ""
+	}
+	if len(runes) <= width {
+		return string(runes)
+	}
+	if width <= 1 {
+		return string(runes[:width])
+	}
+	return string(runes[:width-1]) + "…"
 }
 
 func firstText(value string, fallback string) string {
@@ -348,12 +377,11 @@ func firstText(value string, fallback string) string {
 	return value
 }
 
-func (m model) currentInterface() *system.NetworkInterface {
-	if len(m.snapshot.Network.Interfaces) == 0 || m.networkCursor < 0 || m.networkCursor >= len(m.snapshot.Network.Interfaces) {
-		return nil
+func (m model) networkSaveModeText() string {
+	if m.snapshot.Network.NMCLIAvailable {
+		return "nmcli 持久化保存"
 	}
-	iface := m.snapshot.Network.Interfaces[m.networkCursor]
-	return &iface
+	return "只读，缺少 nmcli"
 }
 
 func max(a, b int) int {

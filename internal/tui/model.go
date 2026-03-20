@@ -22,6 +22,17 @@ const (
 	sectionPackage
 )
 
+const (
+	networkColName = iota
+	networkColState
+	networkColMode
+	networkColIP
+	networkColMask
+	networkColGateway
+	networkColDNS
+	networkColConnection
+)
+
 type snapshotMsg struct {
 	snapshot system.Snapshot
 }
@@ -37,36 +48,42 @@ type pendingAction struct {
 	action system.Action
 }
 
-type formField struct {
-	Label string
-	Value string
-	Kind  string
+type networkDraft struct {
+	Device     string
+	Connection string
+	State      string
+	Mode       string
+	Address    string
+	Mask       string
+	Gateway    string
+	DNS        string
 }
 
-type networkForm struct {
-	iface  system.NetworkInterface
-	fields []formField
-	cursor int
+type networkEdit struct {
+	Active bool
+	Value  string
 }
 
 type model struct {
-	version      string
-	active       section
-	width        int
-	height       int
-	ready        bool
-	loading      bool
-	showHelp     bool
-	diskPath     string
-	diskCursor   int
+	version       string
+	active        section
+	width         int
+	height        int
+	ready         bool
+	loading       bool
+	showHelp      bool
+	diskPath      string
+	diskCursor    int
 	networkCursor int
-	apps         []system.AppInfo
-	appCursor    int
-	selectedApps map[string]bool
-	snapshot     system.Snapshot
-	status       string
-	confirming   *pendingAction
-	form         *networkForm
+	networkCol    int
+	networkDrafts []networkDraft
+	networkEdit   networkEdit
+	apps          []system.AppInfo
+	appCursor     int
+	selectedApps  map[string]bool
+	snapshot      system.Snapshot
+	status        string
+	confirming    *pendingAction
 }
 
 func Run(version string) error {
@@ -103,11 +120,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case snapshotMsg:
 		m.snapshot = msg.snapshot
 		m.loading = false
-		if len(m.snapshot.Network.Interfaces) == 0 {
-			m.networkCursor = 0
-		} else if m.networkCursor >= len(m.snapshot.Network.Interfaces) {
-			m.networkCursor = len(m.snapshot.Network.Interfaces) - 1
-		}
+		m.syncNetworkDrafts()
 		if len(m.snapshot.Disk.Entries) == 0 {
 			m.diskCursor = 0
 		} else if m.diskCursor >= len(m.snapshot.Disk.Entries) {
@@ -117,6 +130,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
+		if m.confirming != nil || m.networkEdit.Active {
+			return m, tickCmd()
+		}
 		m.loading = true
 		return m, tea.Batch(m.refreshCmd(), tickCmd())
 
@@ -131,10 +147,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.refreshCmd()
 
 	case tea.KeyMsg:
-		if m.form != nil {
-			return m.updateForm(msg)
-		}
-
 		if m.confirming != nil {
 			switch msg.String() {
 			case "y", "Y", "enter":
@@ -148,13 +160,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		if m.networkEdit.Active {
+			return m.updateNetworkEdit(msg)
+		}
+
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
+		case "tab":
+			m.nextSection()
+			return m, nil
+		case "shift+tab":
+			m.prevSection()
+			return m, nil
 		case "left", "h":
+			if m.active == sectionOverview {
+				return m.updateOverview(msg)
+			}
 			m.prevSection()
 			return m, nil
 		case "right", "l":
+			if m.active == sectionOverview {
+				return m.updateOverview(msg)
+			}
 			m.nextSection()
 			return m, nil
 		case "r":
@@ -163,6 +191,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.refreshCmd()
 		case "?":
 			m.showHelp = !m.showHelp
+			if m.showHelp {
+				m.status = "已显示帮助"
+			} else {
+				m.status = "已隐藏帮助"
+			}
 			return m, nil
 		}
 
@@ -205,27 +238,84 @@ func (m model) updateOverview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "down", "j":
-		if m.networkCursor < len(m.snapshot.Network.Interfaces)-1 {
+		if m.networkCursor < len(m.networkDrafts)-1 {
 			m.networkCursor++
 		}
 		return m, nil
-	case "e":
-		if len(m.snapshot.Network.Interfaces) == 0 {
-			m.status = "当前没有可编辑的网卡"
-			return m, nil
+	case "left", "h":
+		if m.networkCol > 0 {
+			m.networkCol--
 		}
-		if !m.snapshot.Network.NMCLIAvailable {
-			m.status = "当前系统没有 nmcli，暂不支持保存网卡配置"
-			return m, nil
-		}
-		iface := m.snapshot.Network.Interfaces[m.networkCursor]
-		if strings.TrimSpace(iface.Connection) == "" {
-			m.status = "当前网卡没有可用的 NetworkManager 连接"
-			return m, nil
-		}
-		m.form = newNetworkForm(iface)
-		m.status = "正在编辑网卡配置"
 		return m, nil
+	case "right", "l":
+		if m.networkCol < networkColConnection {
+			m.networkCol++
+		}
+		return m, nil
+	case "enter", "e":
+		if !m.canEditCurrentCell() {
+			m.status = "当前单元格不可编辑"
+			return m, nil
+		}
+		m.networkEdit.Active = true
+		m.networkEdit.Value = m.currentNetworkCellValue()
+		m.status = "开始编辑当前单元格"
+		return m, nil
+	case "ctrl+s":
+		action, err := m.currentNetworkAction()
+		if err != nil {
+			m.status = err.Error()
+			return m, nil
+		}
+		m.confirming = &pendingAction{action: action}
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m model) updateNetworkEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.networkEdit = networkEdit{}
+		m.status = "已取消单元格编辑"
+		return m, nil
+	case "enter":
+		m.applyNetworkEditValue(strings.TrimSpace(m.networkEdit.Value))
+		m.networkEdit = networkEdit{}
+		m.status = "已应用当前单元格"
+		return m, nil
+	case "backspace":
+		if m.networkCol == networkColMode {
+			m.toggleModeValue()
+			return m, nil
+		}
+		runes := []rune(m.networkEdit.Value)
+		if len(runes) > 0 {
+			m.networkEdit.Value = string(runes[:len(runes)-1])
+		}
+		return m, nil
+	case "left", "right", " ":
+		if m.networkCol == networkColMode {
+			m.toggleModeValue()
+		}
+		return m, nil
+	case "ctrl+s":
+		m.applyNetworkEditValue(strings.TrimSpace(m.networkEdit.Value))
+		m.networkEdit = networkEdit{}
+		action, err := m.currentNetworkAction()
+		if err != nil {
+			m.status = err.Error()
+			return m, nil
+		}
+		m.confirming = &pendingAction{action: action}
+		return m, nil
+	}
+
+	if m.networkCol != networkColMode {
+		value := msg.String()
+		if utf8.RuneCountInString(value) == 1 && value != "\x00" {
+			m.networkEdit.Value += value
+		}
 	}
 	return m, nil
 }
@@ -318,58 +408,6 @@ func (m model) updatePackages(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.form == nil {
-		return m, nil
-	}
-
-	field := m.form.current()
-	switch msg.String() {
-	case "esc":
-		m.form = nil
-		m.status = "已取消网卡编辑"
-		return m, nil
-	case "up", "k", "shift+tab":
-		m.form.move(-1)
-		return m, nil
-	case "down", "j", "tab":
-		m.form.move(1)
-		return m, nil
-	case "left", "right", " ":
-		if field.Kind == "mode" {
-			m.form.toggleMode()
-		}
-		return m, nil
-	case "backspace":
-		if field.Kind == "text" && field.Value != "" {
-			runes := []rune(field.Value)
-			field.Value = string(runes[:len(runes)-1])
-		}
-		return m, nil
-	case "ctrl+s":
-		cfg := m.form.config()
-		action, err := system.ConfigureNetworkAction(cfg)
-		if err != nil {
-			m.status = err.Error()
-			return m, nil
-		}
-		m.form = nil
-		m.confirming = &pendingAction{action: action}
-		return m, nil
-	case "enter":
-		m.form.move(1)
-		return m, nil
-	}
-
-	if field.Kind == "text" {
-		value := msg.String()
-		if utf8.RuneCountInString(value) == 1 && value != "\x00" {
-			field.Value += value
-		}
-	}
-	return m, nil
-}
-
 func (m model) View() string {
 	if !m.ready {
 		return "正在准备界面..."
@@ -382,9 +420,6 @@ func (m model) View() string {
 
 	if m.confirming != nil {
 		return overlay(content, m.viewConfirmDialog())
-	}
-	if m.form != nil {
-		return overlay(content, m.viewNetworkForm())
 	}
 
 	return content
@@ -438,62 +473,149 @@ func renderList(lines []string, empty string) string {
 	return strings.Join(lines, "\n")
 }
 
-func newNetworkForm(iface system.NetworkInterface) *networkForm {
-	mode := "静态"
-	if strings.TrimSpace(iface.Method) == "auto" {
-		mode = "DHCP"
-	}
-	return &networkForm{
-		iface: iface,
-		fields: []formField{
-			{Label: "模式", Value: mode, Kind: "mode"},
-			{Label: "IP 地址", Value: iface.IPv4, Kind: "text"},
-			{Label: "子网掩码", Value: iface.Mask, Kind: "text"},
-			{Label: "默认网关", Value: iface.Gateway, Kind: "text"},
-			{Label: "DNS", Value: strings.Join(iface.DNS, " "), Kind: "text"},
-		},
-	}
-}
-
-func (f *networkForm) move(delta int) {
-	if len(f.fields) == 0 {
-		f.cursor = 0
+func (m *model) syncNetworkDrafts() {
+	if len(m.snapshot.Network.Interfaces) == 0 {
+		m.networkDrafts = nil
+		m.networkCursor = 0
 		return
 	}
-	f.cursor = (f.cursor + delta + len(f.fields)) % len(f.fields)
-}
 
-func (f *networkForm) current() *formField {
-	if len(f.fields) == 0 {
-		return &formField{}
+	next := make([]networkDraft, 0, len(m.snapshot.Network.Interfaces))
+	for idx, iface := range m.snapshot.Network.Interfaces {
+		mode := "静态"
+		if strings.TrimSpace(iface.Method) == "auto" {
+			mode = "DHCP"
+		}
+		draft := networkDraft{
+			Device:     iface.Name,
+			Connection: iface.Connection,
+			State:      iface.State,
+			Mode:       mode,
+			Address:    iface.IPv4,
+			Mask:       iface.Mask,
+			Gateway:    iface.Gateway,
+			DNS:        strings.Join(iface.DNS, " "),
+		}
+		if idx < len(m.networkDrafts) && m.networkDrafts[idx].Device == iface.Name {
+			old := m.networkDrafts[idx]
+			draft.Mode = firstText(old.Mode, draft.Mode)
+			draft.Address = firstText(old.Address, draft.Address)
+			draft.Mask = firstText(old.Mask, draft.Mask)
+			draft.Gateway = firstText(old.Gateway, draft.Gateway)
+			draft.DNS = firstText(old.DNS, draft.DNS)
+		}
+		next = append(next, draft)
 	}
-	return &f.fields[f.cursor]
+	m.networkDrafts = next
+	if m.networkCursor >= len(m.networkDrafts) {
+		m.networkCursor = len(m.networkDrafts) - 1
+	}
+	if m.networkCursor < 0 {
+		m.networkCursor = 0
+	}
+	if m.networkCol > networkColConnection {
+		m.networkCol = networkColConnection
+	}
 }
 
-func (f *networkForm) toggleMode() {
-	current := f.current()
-	if current.Kind != "mode" {
+func (m model) currentNetworkDraft() *networkDraft {
+	if len(m.networkDrafts) == 0 || m.networkCursor < 0 || m.networkCursor >= len(m.networkDrafts) {
+		return nil
+	}
+	return &m.networkDrafts[m.networkCursor]
+}
+
+func (m model) canEditCurrentCell() bool {
+	draft := m.currentNetworkDraft()
+	if draft == nil {
+		return false
+	}
+	if !m.snapshot.Network.NMCLIAvailable {
+		return false
+	}
+	if strings.TrimSpace(draft.Connection) == "" {
+		return false
+	}
+	return m.networkCol >= networkColMode && m.networkCol <= networkColDNS
+}
+
+func (m model) currentNetworkCellValue() string {
+	draft := m.currentNetworkDraft()
+	if draft == nil {
+		return ""
+	}
+	switch m.networkCol {
+	case networkColName:
+		return draft.Device
+	case networkColState:
+		return draft.State
+	case networkColMode:
+		return draft.Mode
+	case networkColIP:
+		return draft.Address
+	case networkColMask:
+		return draft.Mask
+	case networkColGateway:
+		return draft.Gateway
+	case networkColDNS:
+		return draft.DNS
+	case networkColConnection:
+		return draft.Connection
+	default:
+		return ""
+	}
+}
+
+func (m *model) applyNetworkEditValue(value string) {
+	draft := m.currentNetworkDraft()
+	if draft == nil {
 		return
 	}
-	if current.Value == "DHCP" {
-		current.Value = "静态"
-		return
+	switch m.networkCol {
+	case networkColMode:
+		if value == "DHCP" {
+			draft.Mode = "DHCP"
+		} else {
+			draft.Mode = "静态"
+		}
+	case networkColIP:
+		draft.Address = value
+	case networkColMask:
+		draft.Mask = value
+	case networkColGateway:
+		draft.Gateway = value
+	case networkColDNS:
+		draft.DNS = value
 	}
-	current.Value = "DHCP"
 }
 
-func (f *networkForm) config() system.NetworkConfig {
+func (m *model) toggleModeValue() {
+	if m.networkCol != networkColMode {
+		return
+	}
+	if m.networkEdit.Value == "DHCP" {
+		m.networkEdit.Value = "静态"
+	} else {
+		m.networkEdit.Value = "DHCP"
+	}
+}
+
+func (m model) currentNetworkAction() (system.Action, error) {
+	draft := m.currentNetworkDraft()
+	if draft == nil {
+		return system.Action{}, fmt.Errorf("当前没有可保存的网卡")
+	}
 	method := "manual"
-	if f.fields[0].Value == "DHCP" {
+	if draft.Mode == "DHCP" {
 		method = "auto"
 	}
-	return system.NetworkConfig{
-		Connection: f.iface.Connection,
-		Device:     f.iface.Name,
+	return system.ConfigureNetworkAction(system.NetworkConfig{
+		Connection: draft.Connection,
+		Device:     draft.Device,
 		Method:     method,
-		Address:    strings.TrimSpace(f.fields[1].Value),
-		Mask:       strings.TrimSpace(f.fields[2].Value),
-		Gateway:    strings.TrimSpace(f.fields[3].Value),
-		DNS:        strings.TrimSpace(f.fields[4].Value),
-	}
+		Address:    draft.Address,
+		Mask:       draft.Mask,
+		Gateway:    draft.Gateway,
+		DNS:        draft.DNS,
+	})
 }

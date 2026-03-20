@@ -50,9 +50,10 @@ curl -L https://github.com/chxcodepro/qilin-manager-tui/releases/latest/download
 ## 其他按键
 
 - `系统/网络` 页
-  - `↑/↓` 选择网卡
-  - `e` 编辑网卡
-  - `Ctrl+S` 保存网卡配置
+  - `↑/↓` 选择行
+  - `←/→` 选择列
+  - `Enter` 编辑单元格
+  - `Ctrl+S` 保存当前网卡配置
 - `磁盘分析` 页
   - `↑/↓` 选择子项
   - `Enter` 进入目录
