@@ -110,78 +110,65 @@ func (m model) viewBody() string {
 }
 
 func (m model) viewOverview(width int) string {
-	top := lipgloss.JoinHorizontal(
-		lipgloss.Top,
-		renderInfoCard("系统概览", m.snapshot.System.Items, width/3-2),
-		"  ",
-		cardStyle.Width(width-width/3-2).Render(
-			highlightStyle.Render("网络总览")+"\n"+
-				labelStyle.Render("默认网关:")+" "+valueStyle.Render(m.snapshot.Network.DefaultGateway)+"\n"+
-				labelStyle.Render("全局 DNS:")+" "+valueStyle.Render(firstText(strings.Join(m.snapshot.Network.DNS, ", "), "-"))+"\n"+
-				labelStyle.Render("保存方式:")+" "+valueStyle.Render(m.networkSaveModeText()),
-		),
-	)
+	sysCard := renderInfoCard("系统概览", m.snapshot.System.Items, width/3-2)
 
-	table := cardStyle.Width(width).Render(
+	tableW := width - width/3 - 2
+	table := cardStyle.Width(tableW).Render(
 		highlightStyle.Render("网卡配置表") + "\n" +
-			"光标可直接选中单元格；Enter 开始编辑；Ctrl+S 保存当前行\n" +
-			renderNetworkTable(m, width-6),
+			labelStyle.Render("Enter 编辑 | Ctrl+S 保存当前行") + "\n" +
+			renderNetworkTable(m, tableW-6),
 	)
 
-	return lipgloss.JoinVertical(lipgloss.Left, top, table)
+	return lipgloss.JoinHorizontal(lipgloss.Top, sysCard, "  ", table)
 }
 
 func (m model) viewDisk(width int) string {
-	top := cardStyle.Width(width).Render(
-		highlightStyle.Render("当前路径") + "\n" +
-			valueStyle.Render(m.snapshot.Disk.Target) + "\n" +
-			labelStyle.Render("上一级:") + " " + valueStyle.Render(firstText(m.snapshot.Disk.Parent, "无")) + "\n" +
-			labelStyle.Render("操作:  ") + " Enter 进入 | Backspace 返回",
-	)
-	bottomLeft := cardStyle.Width(width/3 - 2).Render(
-		highlightStyle.Render("挂载") + "\n" +
+	mountCard := cardStyle.Width(width/3 - 2).Render(
+		highlightStyle.Render("挂载信息") + "\n" +
 			renderList(m.snapshot.Disk.Filesystems, "暂无数据"),
 	)
-	bottomRight := cardStyle.Width(width-width/3-2).Render(
+
+	entryW := width - width/3 - 2
+	pathLine := labelStyle.Render("路径: ") + valueStyle.Render(m.snapshot.Disk.Target) +
+		"  " + labelStyle.Render("上级: ") + valueStyle.Render(firstText(m.snapshot.Disk.Parent, "/"))
+	entryCard := cardStyle.Width(entryW).Render(
 		highlightStyle.Render("子项占用") + "\n" +
-			renderDiskEntries(m.snapshot.Disk.Entries, m.diskCursor, width-width/3-18),
+			pathLine + "\n" +
+			labelStyle.Render("↑/↓ 选择 | Enter 进入 | Backspace 返回") + "\n" +
+			renderDiskEntries(m.snapshot.Disk.Entries, m.diskCursor, entryW-20),
 	)
-	return lipgloss.JoinVertical(
-		lipgloss.Left,
-		top,
-		lipgloss.JoinHorizontal(lipgloss.Top, bottomLeft, "  ", bottomRight),
-	)
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, mountCard, "  ", entryCard)
 }
 
 func (m model) viewPerf(width int) string {
-	summary := renderInfoCard("资源总览", m.snapshot.Perf.Summary, width/3-2)
-	table := cardStyle.Width(width-width/3-2).Render(
-		highlightStyle.Render("进程资源表") + "\n" +
-			renderProcessTable(m.snapshot.Perf.Top),
+	pairs := make([]string, 0, len(m.snapshot.Perf.Summary))
+	for _, item := range m.snapshot.Perf.Summary {
+		pairs = append(pairs, labelStyle.Render(item.Label+":")+valueStyle.Render(" "+item.Value))
+	}
+
+	return cardStyle.Width(width).Render(
+		highlightStyle.Render("系统资源") + "\n" +
+			strings.Join(pairs, "  ") + "\n" +
+			renderProcessTable(m.snapshot.Perf.Top, width-6),
 	)
-	return lipgloss.JoinHorizontal(lipgloss.Top, summary, "  ", table)
 }
 
 func (m model) viewPackages(width int) string {
-	sourceCard := cardStyle.Width(width/2 - 2).Render(
-		highlightStyle.Render("软件源状态") + "\n" +
-			renderPackageState(m.snapshot.Packages),
-	)
-	actionCard := cardStyle.Width(width-width/2-2).Render(
-		highlightStyle.Render("维护动作") + "\n" +
-			highlightStyle.Render("[o]") + " 切换官方源\n" +
-			labelStyle.Render("    cp sources.list{,.bak} && 写入官方源 && apt-get update") + "\n" +
-			highlightStyle.Render("[b]") + " 恢复备份源\n" +
-			labelStyle.Render("    cp sources.list.bak sources.list && apt-get update") + "\n" +
-			highlightStyle.Render("[u]") + " 更新索引\n" +
-			labelStyle.Render("    apt-get update") + "\n" +
-			highlightStyle.Render("[c]") + " 清理包缓存\n" +
-			labelStyle.Render("    apt-get clean") + "\n" +
-			highlightStyle.Render("[g]") + " 清理 .log 文件\n" +
-			labelStyle.Render("    find /var/log -name '*.log' -exec truncate -s 0 {} +") + "\n" +
-			highlightStyle.Render("[i]") + " 安装勾选的软件\n" +
-			highlightStyle.Render("[d]") + " 卸载勾选的软件",
-	)
+	contentW := width - 6
+
+	statusLine := labelStyle.Render("源状态:") +
+		" apt " + boolText(m.snapshot.Packages.AptReady) +
+		" | sudo " + boolText(m.snapshot.Packages.SudoReady) +
+		" | 备份源 " + boolText(m.snapshot.Packages.BackupExists)
+
+	actionLine := highlightStyle.Render("[o]") + "切源 " +
+		highlightStyle.Render("[b]") + "恢复 " +
+		highlightStyle.Render("[u]") + "更新 " +
+		highlightStyle.Render("[c]") + "清缓存 " +
+		highlightStyle.Render("[g]") + "清日志 " +
+		highlightStyle.Render("[i]") + "安装 " +
+		highlightStyle.Render("[d]") + "卸载"
 
 	visibleApps := m.visibleApps()
 
@@ -196,14 +183,14 @@ func (m model) viewPackages(width int) string {
 	}
 	nameW += 2
 	pkgW += 1
-	statusW := 6
+	statusColW := 6
 	lineOverhead := 4 + 1 + 1 + 1
-	descW := (width - 6) - nameW - pkgW - statusW - lineOverhead
+	descW := contentW - nameW - pkgW - statusColW - lineOverhead
 	if descW < 6 {
 		descW = 6
 	}
 
-	appLines := make([]string, 0, len(visibleApps)+2)
+	appLines := make([]string, 0, len(visibleApps)+3)
 
 	if m.searchMode {
 		appLines = append(appLines, highlightStyle.Render("搜索: ")+m.searchInput+"_")
@@ -211,7 +198,7 @@ func (m model) viewPackages(width int) string {
 		appLines = append(appLines, highlightStyle.Render("搜索结果")+" (Esc 返回默认列表)")
 	}
 
-	appLines = append(appLines, "    "+padRight("名称", nameW)+" "+padRight("包名", pkgW)+" "+padRight("状态", statusW)+" 说明")
+	appLines = append(appLines, labelStyle.Render("    "+padRight("名称", nameW)+" "+padRight("包名", pkgW)+" "+padRight("状态", statusColW)+" 说明"))
 	for idx, app := range visibleApps {
 		selected := " "
 		if m.selectedApps[app.Package] {
@@ -224,22 +211,18 @@ func (m model) viewPackages(width int) string {
 		}
 
 		desc := truncateText(app.Description, descW)
-		line := "[" + selected + "] " + padRight(app.Name, nameW) + " " + padRight(app.Package, pkgW) + " " + padRight(installed, statusW) + " " + desc
+		line := "[" + selected + "] " + padRight(app.Name, nameW) + " " + padRight(app.Package, pkgW) + " " + padRight(installed, statusColW) + " " + desc
 		if idx == m.appCursor {
 			line = selectedRowStyle.Render(line)
 		}
 		appLines = append(appLines, line)
 	}
 
-	appCard := cardStyle.Width(width).Render(
-		highlightStyle.Render("软件清单") + "\n" +
-			"上下移动，空格勾选\n" +
+	return cardStyle.Width(width).Render(
+		highlightStyle.Render("软件维护") + "\n" +
+			statusLine + "\n" +
+			actionLine + "\n" +
 			renderList(appLines, "暂无软件"),
-	)
-
-	return lipgloss.JoinVertical(lipgloss.Left,
-		lipgloss.JoinHorizontal(lipgloss.Top, sourceCard, "  ", actionCard),
-		appCard,
 	)
 }
 
@@ -294,12 +277,20 @@ func renderInfoCard(title string, items []system.InfoItem, width int) string {
 	return cardStyle.Width(width).Render(strings.Join(lines, "\n"))
 }
 
-func renderProcessTable(items []system.ProcessItem) string {
+func renderProcessTable(items []system.ProcessItem, availWidth int) string {
+	pidW := 7
+	cpuW := 7
+	memW := 7
+	nameW := availWidth - pidW - cpuW - memW - 3
+	if nameW < 12 {
+		nameW = 12
+	}
+
 	lines := []string{
-		padRight("PID", 8) + " " + padRight("进程", 22) + " " + padRight("CPU%", 8) + " " + "内存%",
+		labelStyle.Render(padRight("PID", pidW) + " " + padRight("进程", nameW) + " " + padRight("CPU%", cpuW) + " " + "MEM%"),
 	}
 	for _, item := range items {
-		lines = append(lines, padRight(item.PID, 8)+" "+padRight(truncateText(item.Name, 22), 22)+" "+padRight(item.CPU, 8)+" "+item.Memory)
+		lines = append(lines, padRight(item.PID, pidW)+" "+padRight(truncateText(item.Name, nameW), nameW)+" "+padRight(item.CPU, cpuW)+" "+item.Memory)
 	}
 	return strings.Join(lines, "\n")
 }
