@@ -4,15 +4,12 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/chxcodepro/qilin-manager-tui/internal/system"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/chxcodepro/qilin-manager-tui/internal/system"
 )
 
 var (
-	pageStyle = lipgloss.NewStyle().
-			Padding(1, 2).
-			Width(120)
-
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color("#F8FAFC")).
@@ -55,8 +52,7 @@ var (
 
 func (m model) viewHeader() string {
 	tabs := []string{
-		m.renderTab(sectionSystem, "系统信息"),
-		m.renderTab(sectionNetwork, "网络信息"),
+		m.renderTab(sectionOverview, "系统/网络"),
 		m.renderTab(sectionDisk, "磁盘分析"),
 		m.renderTab(sectionPerf, "CPU/内存"),
 		m.renderTab(sectionPackage, "软件维护"),
@@ -91,10 +87,8 @@ func (m model) viewBody() string {
 	width := max(m.width-4, 60)
 	bodyWidth := width - 6
 	switch m.active {
-	case sectionSystem:
-		return panelStyle.Width(width).Render(m.viewSystem(bodyWidth))
-	case sectionNetwork:
-		return panelStyle.Width(width).Render(m.viewNetwork(bodyWidth))
+	case sectionOverview:
+		return panelStyle.Width(width).Render(m.viewOverview(bodyWidth))
 	case sectionDisk:
 		return panelStyle.Width(width).Render(m.viewDisk(bodyWidth))
 	case sectionPerf:
@@ -106,42 +100,24 @@ func (m model) viewBody() string {
 	}
 }
 
-func (m model) viewSystem(width int) string {
-	left := renderInfoCard("系统概览", m.snapshot.System.Items, width/2-2)
-	rightLines := []string{
-		"这个页面主要看整机基本信息。",
-		"如果系统识别不准，先检查 /etc/os-release。",
-		"数据来源以系统命令和 /proc 为主。",
-	}
-	right := cardStyle.Width(width - width/2 - 2).Render(renderList(rightLines, "暂无说明"))
-	return lipgloss.JoinHorizontal(lipgloss.Top, left, "  ", right)
-}
-
-func (m model) viewNetwork(width int) string {
-	left := cardStyle.Width(width/2 - 2).Render(
-		highlightStyle.Render("网卡与地址") + "\n" +
-			renderList(m.snapshot.Network.Interfaces, "暂无数据"),
+func (m model) viewOverview(width int) string {
+	systemCard := renderInfoCard("系统概览", m.snapshot.System.Items, width/3-2)
+	networkList := cardStyle.Width(width/3 - 2).Render(
+		highlightStyle.Render("网卡列表") + "\n" +
+			renderNetworkList(m.snapshot.Network.Interfaces, m.networkCursor),
 	)
-	rightTop := cardStyle.Width(width-width/2-2).Render(
-		highlightStyle.Render("默认路由") + "\n" +
-			renderList(m.snapshot.Network.Routes, "暂无数据"),
+	networkDetail := cardStyle.Width(width-width/3-width/3-4).Render(
+		highlightStyle.Render("网络详情") + "\n" +
+			renderNetworkDetail(m.snapshot.Network, m.currentInterface()),
 	)
-	rightBottom := cardStyle.Width(width-width/2-2).Render(
-		highlightStyle.Render("DNS 配置") + "\n" +
-			renderList(m.snapshot.Network.DNS, "暂无数据"),
-	)
-	return lipgloss.JoinHorizontal(
-		lipgloss.Top,
-		left,
-		"  ",
-		lipgloss.JoinVertical(lipgloss.Left, rightTop, rightBottom),
-	)
+	return lipgloss.JoinHorizontal(lipgloss.Top, systemCard, "  ", networkList, "  ", networkDetail)
 }
 
 func (m model) viewDisk(width int) string {
 	info := []system.InfoItem{
 		{Label: "当前路径", Value: m.snapshot.Disk.Target},
-		{Label: "切换按键", Value: "[ / ]"},
+		{Label: "上一级", Value: firstText(m.snapshot.Disk.Parent, "无")},
+		{Label: "操作", Value: "Enter 进入 / Backspace 返回"},
 	}
 	left := renderInfoCard("分析目标", info, width/3)
 	center := cardStyle.Width(width/3).Render(
@@ -149,8 +125,8 @@ func (m model) viewDisk(width int) string {
 			renderList(m.snapshot.Disk.Filesystems, "暂无数据"),
 	)
 	right := cardStyle.Width(width-width/3-width/3-4).Render(
-		highlightStyle.Render("目录占用 Top") + "\n" +
-			renderList(m.snapshot.Disk.TopDirs, "暂无数据"),
+		highlightStyle.Render("当前目录子项占用") + "\n" +
+			renderDiskEntries(m.snapshot.Disk.Entries, m.diskCursor),
 	)
 	return lipgloss.JoinHorizontal(lipgloss.Top, left, "  ", center, "  ", right)
 }
@@ -216,12 +192,17 @@ func (m model) viewPackages(width int) string {
 
 func (m model) viewFooter() string {
 	width := max(m.width-4, 60)
-	lines := []string{
-		"状态: " + m.status,
-	}
+	lines := []string{"状态: " + m.status}
 	if m.showHelp {
 		lines = append(lines, "全局: ←/→ 切页 | r 刷新 | ? 帮助 | q 退出")
-		lines = append(lines, "磁盘页: [ / ] 切换路径 | 软件页: ↑/↓ 选中 | 空格勾选")
+		switch m.active {
+		case sectionOverview:
+			lines = append(lines, "系统/网络页: ↑/↓ 选网卡 | e 编辑并保存")
+		case sectionDisk:
+			lines = append(lines, "磁盘页: ↑/↓ 选项 | Enter 进入目录 | Backspace 返回")
+		case sectionPackage:
+			lines = append(lines, "软件页: ↑/↓ 选中 | 空格勾选")
+		}
 	}
 	return panelStyle.Width(width).Render(strings.Join(lines, "\n"))
 }
@@ -242,6 +223,29 @@ func (m model) viewConfirmDialog() string {
 		Width(min(max(m.width/2, 40), 80)).
 		BorderForeground(lipgloss.Color("#F59E0B")).
 		Render(content)
+}
+
+func (m model) viewNetworkForm() string {
+	if m.form == nil {
+		return ""
+	}
+	lines := []string{
+		highlightStyle.Render("编辑网卡配置"),
+		labelStyle.Render("网卡: "+m.form.iface.Name+" | 连接: "+m.form.iface.Connection),
+		"",
+	}
+	for idx, field := range m.form.fields {
+		line := fmt.Sprintf("%-10s %s", field.Label, field.Value)
+		if idx == m.form.cursor {
+			line = selectedRowStyle.Render(line)
+		}
+		lines = append(lines, line)
+	}
+	lines = append(lines, "", "↑/↓ 或 Tab 切换字段，左右切换模式，Ctrl+S 保存，Esc 取消")
+	return cardStyle.
+		Width(min(max(m.width/2, 48), 86)).
+		BorderForeground(lipgloss.Color("#F59E0B")).
+		Render(strings.Join(lines, "\n"))
 }
 
 func renderInfoCard(title string, items []system.InfoItem, width int) string {
@@ -273,6 +277,83 @@ func renderPackageState(state system.PackageSection) string {
 	}
 	lines = append(lines, state.SourceLines...)
 	return strings.Join(lines, "\n")
+}
+
+func renderNetworkList(items []system.NetworkInterface, cursor int) string {
+	if len(items) == 0 {
+		return "暂无网卡"
+	}
+	lines := make([]string, 0, len(items))
+	for idx, item := range items {
+		line := fmt.Sprintf("%-10s %-10s %-15s %-15s", item.Name, item.State, firstText(item.IPv4, "-"), firstText(item.Mask, "-"))
+		if idx == cursor {
+			line = selectedRowStyle.Render(line)
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderNetworkDetail(network system.NetworkSection, iface *system.NetworkInterface) string {
+	lines := []string{
+		fmt.Sprintf("默认网关: %s", network.DefaultGateway),
+		fmt.Sprintf("全局 DNS: %s", strings.Join(network.DNS, ", ")),
+	}
+	if network.NMCLIAvailable {
+		lines = append(lines, "可编辑方式: nmcli 持久化保存")
+	} else {
+		lines = append(lines, "可编辑方式: 当前系统缺少 nmcli，只能查看")
+	}
+	lines = append(lines, "")
+	if iface == nil {
+		lines = append(lines, "请先选中一块网卡")
+		return strings.Join(lines, "\n")
+	}
+	lines = append(lines,
+		fmt.Sprintf("网卡: %s", iface.Name),
+		fmt.Sprintf("连接名: %s", firstText(iface.Connection, "无")),
+		fmt.Sprintf("状态: %s", firstText(iface.State, "-")),
+		fmt.Sprintf("IPv4: %s", firstText(iface.IPv4, "-")),
+		fmt.Sprintf("子网掩码: %s", firstText(iface.Mask, "-")),
+		fmt.Sprintf("默认网关: %s", firstText(iface.Gateway, "-")),
+		fmt.Sprintf("DNS: %s", firstText(strings.Join(iface.DNS, ", "), "-")),
+		fmt.Sprintf("模式: %s", firstText(iface.Method, "未知")),
+	)
+	return strings.Join(lines, "\n")
+}
+
+func renderDiskEntries(entries []system.DiskEntry, cursor int) string {
+	if len(entries) == 0 {
+		return "当前目录没有子项，或需要更高权限"
+	}
+	lines := make([]string, 0, len(entries))
+	for idx, entry := range entries {
+		kind := "文件"
+		if entry.IsDir {
+			kind = "目录"
+		}
+		line := fmt.Sprintf("%-8s %-8s %s", entry.Size, kind, entry.Name)
+		if idx == cursor {
+			line = selectedRowStyle.Render(line)
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func firstText(value string, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
+}
+
+func (m model) currentInterface() *system.NetworkInterface {
+	if len(m.snapshot.Network.Interfaces) == 0 || m.networkCursor < 0 || m.networkCursor >= len(m.snapshot.Network.Interfaces) {
+		return nil
+	}
+	iface := m.snapshot.Network.Interfaces[m.networkCursor]
+	return &iface
 }
 
 func max(a, b int) int {

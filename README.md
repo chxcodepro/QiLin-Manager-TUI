@@ -2,12 +2,12 @@
 
 一个给银河麒麟 `V10` 用的终端管理面板，偏系统运维和桌面维护。
 
-## 功能1
+## 功能
 
-- 查询系统信息
-- 查询网络信息
+- 合并查看系统信息和网络信息
 - 分析磁盘文件占用
 - 合并展示 CPU 和内存占用
+- 编辑并保存网卡 IPv4 配置
 - 切换银河麒麟软件源
 - 清理包缓存
 - 清理 `.log` 文件
@@ -31,8 +31,7 @@ curl -L https://github.com/chxcodepro/qilin-manager-tui/releases/latest/download
 
 ## 页面说明
 
-- `系统信息`
-- `网络信息`
+- `系统/网络`
 - `磁盘分析`
 - `CPU/内存`
 - `软件维护`
@@ -47,6 +46,17 @@ curl -L https://github.com/chxcodepro/qilin-manager-tui/releases/latest/download
 - `↑/↓` 选择软件
 - `空格` 勾选软件
 - `i` 安装勾选的软件
+
+## 其他按键
+
+- `系统/网络` 页
+  - `↑/↓` 选择网卡
+  - `e` 编辑网卡
+  - `Ctrl+S` 保存网卡配置
+- `磁盘分析` 页
+  - `↑/↓` 选择子项
+  - `Enter` 进入目录
+  - `Backspace` 返回上一级
 
 ## 固定软件清单
 

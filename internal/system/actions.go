@@ -2,6 +2,8 @@ package system
 
 import (
 	"fmt"
+	"net"
+	"strconv"
 	"strings"
 )
 
@@ -9,6 +11,16 @@ type Action struct {
 	Title   string
 	Confirm string
 	Command string
+}
+
+type NetworkConfig struct {
+	Connection string
+	Device     string
+	Method     string
+	Address    string
+	Mask       string
+	Gateway    string
+	DNS        string
 }
 
 func OfficialSourceAction() Action {
@@ -92,10 +104,101 @@ func InstallAppsAction(packages []string) Action {
 	}
 }
 
+func ConfigureNetworkAction(cfg NetworkConfig) (Action, error) {
+	if !commandExists("nmcli") {
+		return Action{}, fmt.Errorf("系统里没有 nmcli")
+	}
+	if strings.TrimSpace(cfg.Connection) == "" {
+		return Action{}, fmt.Errorf("未找到可保存的网络连接")
+	}
+
+	method := strings.TrimSpace(cfg.Method)
+	if method != "auto" && method != "manual" {
+		return Action{}, fmt.Errorf("不支持的配置模式")
+	}
+
+	lines := []string{"set -e"}
+	connection := shellQuote(cfg.Connection)
+
+	if method == "auto" {
+		lines = append(lines,
+			"nmcli con mod "+connection+" ipv4.method auto ipv4.addresses \"\" ipv4.gateway \"\" ipv4.dns \"\" connection.autoconnect yes",
+			"nmcli con up "+connection,
+		)
+		return Action{
+			Title:   "保存网卡配置",
+			Confirm: fmt.Sprintf("会把网卡 %s 切换到 DHCP 并立即重连，继续吗？", cfg.Device),
+			Command: buildRootCommand(strings.Join(lines, "\n")),
+		}, nil
+	}
+
+	address := strings.TrimSpace(cfg.Address)
+	mask := strings.TrimSpace(cfg.Mask)
+	if address == "" || mask == "" {
+		return Action{}, fmt.Errorf("静态模式下 IP 和子网掩码不能为空")
+	}
+
+	prefix, err := maskToPrefix(mask)
+	if err != nil {
+		return Action{}, err
+	}
+
+	lines = append(lines,
+		"nmcli con mod "+connection+" ipv4.method manual ipv4.addresses "+shellQuote(address+"/"+prefix)+" connection.autoconnect yes",
+	)
+
+	if strings.TrimSpace(cfg.Gateway) != "" {
+		lines = append(lines, "nmcli con mod "+connection+" ipv4.gateway "+shellQuote(strings.TrimSpace(cfg.Gateway)))
+	} else {
+		lines = append(lines, "nmcli con mod "+connection+" ipv4.gateway \"\"")
+	}
+
+	dns := strings.Join(splitDNS(cfg.DNS), " ")
+	if dns != "" {
+		lines = append(lines, "nmcli con mod "+connection+" ipv4.dns "+shellQuote(dns))
+	} else {
+		lines = append(lines, "nmcli con mod "+connection+" ipv4.dns \"\"")
+	}
+
+	lines = append(lines, "nmcli con up "+connection)
+
+	return Action{
+		Title:   "保存网卡配置",
+		Confirm: fmt.Sprintf("会把网卡 %s 改成静态地址 %s/%s，并立即重连，继续吗？", cfg.Device, address, mask),
+		Command: buildRootCommand(strings.Join(lines, "\n")),
+	}, nil
+}
+
 func buildRootCommand(script string) string {
 	escaped := shellQuote(script)
 	if commandExists("sudo") {
 		return "sudo sh -lc " + escaped
 	}
 	return "sh -lc " + escaped
+}
+
+func splitDNS(value string) []string {
+	value = strings.ReplaceAll(value, ",", " ")
+	fields := strings.Fields(value)
+	result := make([]string, 0, len(fields))
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		result = append(result, field)
+	}
+	return result
+}
+
+func maskToPrefix(mask string) (string, error) {
+	ip := net.ParseIP(strings.TrimSpace(mask)).To4()
+	if ip == nil {
+		return "", fmt.Errorf("子网掩码格式不对")
+	}
+	ones, bits := net.IPMask(ip).Size()
+	if bits != 32 || ones < 0 {
+		return "", fmt.Errorf("子网掩码格式不对")
+	}
+	return strconv.Itoa(ones), nil
 }

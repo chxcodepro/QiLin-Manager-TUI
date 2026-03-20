@@ -3,10 +3,12 @@ package system
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -17,10 +19,10 @@ type InfoItem struct {
 }
 
 type ProcessItem struct {
-	PID     string
-	Name    string
-	CPU     string
-	Memory  string
+	PID    string
+	Name   string
+	CPU    string
+	Memory string
 }
 
 type AppState struct {
@@ -32,21 +34,43 @@ type SystemSection struct {
 	Items []InfoItem
 }
 
-type NetworkSection struct {
-	Interfaces []string
-	Routes     []string
+type NetworkInterface struct {
+	Name       string
+	Type       string
+	State      string
+	Connection string
+	Method     string
+	IPv4       string
+	Prefix     string
+	Mask       string
+	Gateway    string
 	DNS        []string
+}
+
+type NetworkSection struct {
+	Interfaces     []NetworkInterface
+	DefaultGateway string
+	DNS            []string
+	NMCLIAvailable bool
+}
+
+type DiskEntry struct {
+	Name  string
+	Path  string
+	Size  string
+	IsDir bool
 }
 
 type DiskSection struct {
 	Target      string
+	Parent      string
 	Filesystems []string
-	TopDirs     []string
+	Entries     []DiskEntry
 }
 
 type PerfSection struct {
-	Summary  []InfoItem
-	TopCPU   []ProcessItem
+	Summary   []InfoItem
+	TopCPU    []ProcessItem
 	TopMemory []ProcessItem
 }
 
@@ -132,30 +156,112 @@ func collectSystem(ctx context.Context) SystemSection {
 }
 
 func collectNetwork(ctx context.Context) NetworkSection {
-	interfaces := cleanLines(runShell(ctx, "ip -brief addr 2>/dev/null || ifconfig 2>/dev/null"))
-	if len(interfaces) == 0 {
-		interfaces = []string{"未获取到网卡信息"}
-	}
-
-	routes := cleanLines(runShell(ctx, "ip route 2>/dev/null"))
-	if len(routes) == 0 {
-		routes = []string{"未获取到路由信息"}
-	}
-
-	dns := readFileLines("/etc/resolv.conf", 8, false)
+	dns := readNameServers("/etc/resolv.conf")
 	if len(dns) == 0 {
 		dns = []string{"未获取到 DNS 配置"}
 	}
 
+	defaultGateway := strings.TrimSpace(runShell(ctx, "ip route show default 2>/dev/null | awk 'NR==1 {print $3}'"))
+	if defaultGateway == "" {
+		defaultGateway = "未获取到默认网关"
+	}
+
+	nmcliAvailable := commandExists("nmcli")
+	interfaces := make([]NetworkInterface, 0)
+	if nmcliAvailable {
+		interfaces = collectNetworkByNMCLI(ctx)
+	}
+	if len(interfaces) == 0 {
+		interfaces = collectNetworkByIP(ctx)
+	}
+	if len(interfaces) == 0 {
+		interfaces = []NetworkInterface{{
+			Name:  "未获取到网卡信息",
+			State: "-",
+		}}
+	}
+
 	return NetworkSection{
-		Interfaces: interfaces,
-		Routes:     routes,
-		DNS:        dns,
+		Interfaces:     interfaces,
+		DefaultGateway: defaultGateway,
+		DNS:            dns,
+		NMCLIAvailable: nmcliAvailable,
 	}
 }
 
+func collectNetworkByNMCLI(ctx context.Context) []NetworkInterface {
+	lines := cleanLines(runShell(ctx, "nmcli -t -f DEVICE,TYPE,STATE,CONNECTION dev status 2>/dev/null"))
+	result := make([]NetworkInterface, 0, len(lines))
+	for _, line := range lines {
+		parts := strings.SplitN(line, ":", 4)
+		if len(parts) < 4 {
+			continue
+		}
+		name := strings.TrimSpace(parts[0])
+		if name == "" || name == "lo" {
+			continue
+		}
+		connection := strings.TrimSpace(parts[3])
+		if connection == "--" {
+			connection = ""
+		}
+		iface := NetworkInterface{
+			Name:       name,
+			Type:       strings.TrimSpace(parts[1]),
+			State:      strings.TrimSpace(parts[2]),
+			Connection: connection,
+		}
+
+		addressText := strings.TrimSpace(runShell(ctx, fmt.Sprintf("nmcli -t -g IP4.ADDRESS device show %s 2>/dev/null | head -n 1", shellQuote(name))))
+		iface.IPv4, iface.Prefix, iface.Mask = parseCIDR(addressText)
+		iface.Gateway = strings.TrimSpace(runShell(ctx, fmt.Sprintf("nmcli -t -g IP4.GATEWAY device show %s 2>/dev/null | head -n 1", shellQuote(name))))
+		iface.DNS = cleanLines(runShell(ctx, fmt.Sprintf("nmcli -t -g IP4.DNS device show %s 2>/dev/null", shellQuote(name))))
+
+		if connection != "" {
+			iface.Method = strings.TrimSpace(runShell(ctx, fmt.Sprintf("nmcli -t -g ipv4.method connection show %s 2>/dev/null | head -n 1", shellQuote(connection))))
+		}
+
+		result = append(result, iface)
+	}
+	return result
+}
+
+func collectNetworkByIP(ctx context.Context) []NetworkInterface {
+	stateMap := make(map[string]string)
+	for _, line := range cleanLines(runShell(ctx, "ip -brief link 2>/dev/null")) {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 {
+			stateMap[fields[0]] = fields[1]
+		}
+	}
+
+	result := make([]NetworkInterface, 0)
+	for _, line := range cleanLines(runShell(ctx, "ip -o -4 addr show scope global 2>/dev/null")) {
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		name := fields[1]
+		if name == "lo" {
+			continue
+		}
+		ipv4, prefix, mask := parseCIDR(fields[3])
+		result = append(result, NetworkInterface{
+			Name:   name,
+			Type:   "ethernet",
+			State:  firstNonEmpty(stateMap[name], "未知"),
+			Method: "",
+			IPv4:   ipv4,
+			Prefix: prefix,
+			Mask:   mask,
+		})
+	}
+	return result
+}
+
 func collectDisk(ctx context.Context, target string) DiskSection {
-	if strings.TrimSpace(target) == "" {
+	target = normalizeLinuxPath(target)
+	if target == "" {
 		target = "/"
 	}
 
@@ -164,15 +270,26 @@ func collectDisk(ctx context.Context, target string) DiskSection {
 		filesystems = []string{"未获取到磁盘挂载信息"}
 	}
 
-	topDirs := cleanLines(runShell(ctx, fmt.Sprintf("du -xh --max-depth=1 %s 2>/dev/null | sort -hr | head -n 12", shellQuote(target))))
-	if len(topDirs) == 0 {
-		topDirs = []string{"未获取到目录占用信息，可能需要更高权限"}
+	lines := cleanLines(runShell(ctx, fmt.Sprintf("du -xh --max-depth=1 %s 2>/dev/null | sort -hr | head -n 30", shellQuote(target))))
+	entries := make([]DiskEntry, 0, len(lines))
+	for _, line := range lines {
+		entry, ok := parseDiskEntry(line, target)
+		if !ok {
+			continue
+		}
+		entries = append(entries, entry)
+	}
+
+	parent := filepath.Dir(target)
+	if target == "/" || parent == "." || parent == target {
+		parent = ""
 	}
 
 	return DiskSection{
 		Target:      target,
+		Parent:      parent,
 		Filesystems: filesystems,
-		TopDirs:     topDirs,
+		Entries:     entries,
 	}
 }
 
@@ -189,12 +306,12 @@ func collectPerf(ctx context.Context) PerfSection {
 		cpuUsage += "%"
 	}
 
-	memUsage := strings.TrimSpace(runShell(ctx, `free -m 2>/dev/null | awk '/Mem:/ {printf "%sMB / %sMB (%.1f%%)", $3, $2, ($3/$2)*100}'`))
+	memUsage := strings.TrimSpace(runShell(ctx, `free -m 2>/dev/null | awk '/Mem:/ {printf "%sMB / %sMB / %sMB", $3, $2, $7}'`))
 	if memUsage == "" {
 		memUsage = "未知"
 	}
 
-	swapUsage := strings.TrimSpace(runShell(ctx, `free -m 2>/dev/null | awk '/Swap:/ {printf "%sMB / %sMB", $3, $2}'`))
+	swapUsage := strings.TrimSpace(runShell(ctx, `free -m 2>/dev/null | awk '/Swap:/ {if ($2 == 0) {printf "0MB / 0MB / 0%%"} else {printf "%sMB / %sMB / %.1f%%", $3, $2, ($3/$2)*100}}'`))
 	if swapUsage == "" {
 		swapUsage = "未知"
 	}
@@ -213,8 +330,8 @@ func collectPerf(ctx context.Context) PerfSection {
 		Summary: []InfoItem{
 			{Label: "CPU 总览", Value: cpuUsage},
 			{Label: "负载", Value: loadAvg},
-			{Label: "内存", Value: memUsage},
-			{Label: "交换分区", Value: swapUsage},
+			{Label: "内存 已用/总量/可用", Value: memUsage},
+			{Label: "交换分区 已用/总量/使用率", Value: swapUsage},
 		},
 		TopCPU:    topCPU,
 		TopMemory: topMemory,
@@ -368,6 +485,94 @@ func readFileLines(path string, limit int, skipComments bool) []string {
 		}
 	}
 	return result
+}
+
+func readNameServers(path string) []string {
+	lines := readFileLines(path, 0, true)
+	result := make([]string, 0, len(lines))
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] == "nameserver" {
+			result = append(result, fields[1])
+		}
+	}
+	return result
+}
+
+func parseCIDR(value string) (string, string, string) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", "", ""
+	}
+	parts := strings.SplitN(value, "/", 2)
+	if len(parts) != 2 {
+		return value, "", ""
+	}
+	mask := prefixToMask(parts[1])
+	return parts[0], parts[1], mask
+}
+
+func prefixToMask(prefix string) string {
+	bits, err := strconv.Atoi(strings.TrimSpace(prefix))
+	if err != nil || bits < 0 || bits > 32 {
+		return ""
+	}
+	mask := net.CIDRMask(bits, 32)
+	if len(mask) != 4 {
+		return ""
+	}
+	return fmt.Sprintf("%d.%d.%d.%d", mask[0], mask[1], mask[2], mask[3])
+}
+
+func parseDiskEntry(line string, target string) (DiskEntry, bool) {
+	size := ""
+	path := ""
+	if strings.Contains(line, "\t") {
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) == 2 {
+			size = strings.TrimSpace(parts[0])
+			path = strings.TrimSpace(parts[1])
+		}
+	} else {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 {
+			size = fields[0]
+			path = strings.Join(fields[1:], " ")
+		}
+	}
+	if size == "" || path == "" {
+		return DiskEntry{}, false
+	}
+	if normalizeLinuxPath(path) == normalizeLinuxPath(target) {
+		return DiskEntry{}, false
+	}
+	info, err := os.Stat(path)
+	isDir := err == nil && info.IsDir()
+	name := filepath.Base(path)
+	if path == "/" {
+		name = "/"
+	}
+	if name == "." || name == "" {
+		name = path
+	}
+	return DiskEntry{
+		Name:  name,
+		Path:  path,
+		Size:  size,
+		IsDir: isDir,
+	}, true
+}
+
+func normalizeLinuxPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	clean := filepath.Clean(path)
+	if clean == "." {
+		return "/"
+	}
+	return clean
 }
 
 func firstNonEmpty(values ...string) string {
