@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -117,9 +116,9 @@ func (m model) viewOverview(width int) string {
 		"  ",
 		cardStyle.Width(width-width/3-2).Render(
 			highlightStyle.Render("网络总览")+"\n"+
-				fmt.Sprintf("默认网关: %s\n", m.snapshot.Network.DefaultGateway)+
-				fmt.Sprintf("全局 DNS: %s\n", firstText(strings.Join(m.snapshot.Network.DNS, ", "), "-"))+
-				fmt.Sprintf("保存方式: %s", m.networkSaveModeText()),
+				labelStyle.Render("默认网关:")+" "+valueStyle.Render(m.snapshot.Network.DefaultGateway)+"\n"+
+				labelStyle.Render("全局 DNS:")+" "+valueStyle.Render(firstText(strings.Join(m.snapshot.Network.DNS, ", "), "-"))+"\n"+
+				labelStyle.Render("保存方式:")+" "+valueStyle.Render(m.networkSaveModeText()),
 		),
 	)
 
@@ -135,9 +134,9 @@ func (m model) viewOverview(width int) string {
 func (m model) viewDisk(width int) string {
 	top := cardStyle.Width(width).Render(
 		highlightStyle.Render("当前路径") + "\n" +
-			fmt.Sprintf("%s\n", m.snapshot.Disk.Target) +
-			fmt.Sprintf("上一级: %s\n", firstText(m.snapshot.Disk.Parent, "无")) +
-			"按键: Enter 进入 | Backspace 返回",
+			valueStyle.Render(m.snapshot.Disk.Target) + "\n" +
+			labelStyle.Render("上一级:") + " " + valueStyle.Render(firstText(m.snapshot.Disk.Parent, "无")) + "\n" +
+			labelStyle.Render("操作:  ") + " Enter 进入 | Backspace 返回",
 	)
 	bottomLeft := cardStyle.Width(width/3 - 2).Render(
 		highlightStyle.Render("挂载") + "\n" +
@@ -170,15 +169,28 @@ func (m model) viewPackages(width int) string {
 	)
 	actionCard := cardStyle.Width(width-width/2-2).Render(
 		highlightStyle.Render("维护动作") + "\n" +
-			"o 切换官方源\n" +
-			"b 恢复备份源\n" +
-			"u 更新索引\n" +
-			"c 清理包缓存\n" +
-			"g 清理 .log 文件\n" +
-			"i 安装勾选的软件",
+			highlightStyle.Render("[o]") + " 切换官方源\n" +
+			highlightStyle.Render("[b]") + " 恢复备份源\n" +
+			highlightStyle.Render("[u]") + " 更新索引\n" +
+			highlightStyle.Render("[c]") + " 清理包缓存\n" +
+			highlightStyle.Render("[g]") + " 清理 .log 文件\n" +
+			highlightStyle.Render("[i]") + " 安装勾选的软件",
 	)
 
-	appLines := make([]string, 0, len(m.snapshot.Packages.Apps))
+	nameW, pkgW := 0, 0
+	for _, app := range m.snapshot.Packages.Apps {
+		if w := displayWidth(app.Name); w > nameW {
+			nameW = w
+		}
+		if w := displayWidth(app.Package); w > pkgW {
+			pkgW = w
+		}
+	}
+	nameW += 2
+	pkgW += 1
+
+	appLines := make([]string, 0, len(m.snapshot.Packages.Apps)+1)
+	appLines = append(appLines, "    "+padRight("名称", nameW)+" "+padRight("包名", pkgW)+" "+padRight("状态", 6)+" 说明")
 	for idx, app := range m.snapshot.Packages.Apps {
 		selected := " "
 		if m.selectedApps[app.Package] {
@@ -190,7 +202,7 @@ func (m model) viewPackages(width int) string {
 			installed = "已安装"
 		}
 
-		line := fmt.Sprintf("[%s] %-18s %-22s %-8s %s", selected, app.Name, app.Package, installed, app.Description)
+		line := "[" + selected + "] " + padRight(app.Name, nameW) + " " + padRight(app.Package, pkgW) + " " + padRight(installed, 6) + " " + app.Description
 		if idx == m.appCursor {
 			line = selectedRowStyle.Render(line)
 		}
@@ -247,30 +259,47 @@ func (m model) viewConfirmDialog() string {
 func renderInfoCard(title string, items []system.InfoItem, width int) string {
 	lines := make([]string, 0, len(items)+1)
 	lines = append(lines, highlightStyle.Render(title))
+	maxLW := 0
 	for _, item := range items {
-		lines = append(lines, fmt.Sprintf("%s %s", labelStyle.Render(item.Label+":"), valueStyle.Render(item.Value)))
+		if w := displayWidth(item.Label); w > maxLW {
+			maxLW = w
+		}
+	}
+	for _, item := range items {
+		label := padRight(item.Label, maxLW)
+		lines = append(lines, labelStyle.Render(label+":")+" "+valueStyle.Render(item.Value))
 	}
 	return cardStyle.Width(width).Render(strings.Join(lines, "\n"))
 }
 
 func renderProcessTable(items []system.ProcessItem) string {
 	lines := []string{
-		fmt.Sprintf("%-8s %-22s %-8s %-8s", "PID", "进程", "CPU%", "内存%"),
+		padRight("PID", 8) + " " + padRight("进程", 22) + " " + padRight("CPU%", 8) + " " + "内存%",
 	}
 	for _, item := range items {
-		lines = append(lines, fmt.Sprintf("%-8s %-22s %-8s %-8s", item.PID, truncateText(item.Name, 22), item.CPU, item.Memory))
+		lines = append(lines, padRight(item.PID, 8)+" "+padRight(truncateText(item.Name, 22), 22)+" "+padRight(item.CPU, 8)+" "+item.Memory)
 	}
 	return strings.Join(lines, "\n")
 }
 
 func renderPackageState(state system.PackageSection) string {
-	lines := []string{
-		fmt.Sprintf("apt 可用: %t", state.AptReady),
-		fmt.Sprintf("sudo 可用: %t", state.SudoReady),
-		fmt.Sprintf("备份源存在: %t", state.BackupExists),
-		"",
-		"当前 sources.list 预览:",
+	type kv struct{ label, value string }
+	items := []kv{
+		{"apt 可用", boolText(state.AptReady)},
+		{"sudo 可用", boolText(state.SudoReady)},
+		{"备份源存在", boolText(state.BackupExists)},
 	}
+	maxLW := 0
+	for _, item := range items {
+		if w := displayWidth(item.label); w > maxLW {
+			maxLW = w
+		}
+	}
+	lines := make([]string, 0, len(items)+3)
+	for _, item := range items {
+		lines = append(lines, padRight(item.label, maxLW)+": "+item.value)
+	}
+	lines = append(lines, "", "当前 sources.list 预览:")
 	lines = append(lines, state.SourceLines...)
 	return strings.Join(lines, "\n")
 }
@@ -340,13 +369,13 @@ func renderDiskEntries(entries []system.DiskEntry, cursor int, nameWidth int) st
 	if len(entries) == 0 {
 		return "当前目录没有子项，或需要更高权限"
 	}
-	lines := []string{fmt.Sprintf("%-8s %-4s %s", "大小", "类型", "名称")}
+	lines := []string{padRight("大小", 8) + " " + padRight("类型", 4) + " " + "名称"}
 	for idx, entry := range entries {
-		kind := "文"
+		kind := "文件"
 		if entry.IsDir {
 			kind = "目录"
 		}
-		line := fmt.Sprintf("%-8s %-4s %s", entry.Size, kind, truncateText(entry.Name, nameWidth))
+		line := padRight(entry.Size, 8) + " " + padRight(kind, 4) + " " + truncateText(entry.Name, nameWidth)
 		if idx == cursor {
 			line = selectedRowStyle.Render(line)
 		}
@@ -356,17 +385,31 @@ func renderDiskEntries(entries []system.DiskEntry, cursor int, nameWidth int) st
 }
 
 func truncateText(value string, width int) string {
-	runes := []rune(strings.TrimSpace(value))
+	value = strings.TrimSpace(value)
 	if width <= 0 {
 		return ""
 	}
-	if len(runes) <= width {
-		return string(runes)
+	if displayWidth(value) <= width {
+		return value
 	}
 	if width <= 1 {
-		return string(runes[:width])
+		return "…"
 	}
-	return string(runes[:width-1]) + "…"
+	var b strings.Builder
+	used := 0
+	for _, r := range value {
+		rw := 1
+		if isWide(r) {
+			rw = 2
+		}
+		if used+rw > width-1 {
+			break
+		}
+		b.WriteRune(r)
+		used += rw
+	}
+	b.WriteRune('…')
+	return b.String()
 }
 
 func firstText(value string, fallback string) string {
@@ -374,6 +417,41 @@ func firstText(value string, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func isWide(r rune) bool {
+	return (r >= 0x2E80 && r <= 0x9FFF) ||
+		(r >= 0xF900 && r <= 0xFAFF) ||
+		(r >= 0xFE30 && r <= 0xFE4F) ||
+		(r >= 0xFF01 && r <= 0xFF60) ||
+		(r >= 0xFFE0 && r <= 0xFFE6)
+}
+
+func displayWidth(s string) int {
+	w := 0
+	for _, r := range s {
+		if isWide(r) {
+			w += 2
+		} else {
+			w++
+		}
+	}
+	return w
+}
+
+func padRight(s string, width int) string {
+	gap := width - displayWidth(s)
+	if gap <= 0 {
+		return s
+	}
+	return s + strings.Repeat(" ", gap)
+}
+
+func boolText(v bool) string {
+	if v {
+		return "是"
+	}
+	return "否"
 }
 
 func (m model) networkSaveModeText() string {
